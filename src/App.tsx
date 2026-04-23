@@ -60,20 +60,26 @@ function short(addr?: string | null, left = 6, right = 4) {
   return `${addr.slice(0, left)}…${addr.slice(-right)}`
 }
 
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
 function App() {
   const [recipient, setRecipient] = useState('')
   const [minUsdc, setMinUsdc] = useState('0.01')
   const [stage, setStage] = useState<Stage>('idle')
   const [busy, setBusy] = useState(false)
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [ephemeralAddress, setEphemeralAddress] = useState<string | null>(null)
+  const [smartAddress, setSmartAddress] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const [quoteHash, setQuoteHash] = useState<string | null>(null)
   const [expiresAt, setExpiresAt] = useState<number | null>(null)
 
+  const busyRef = useRef(false)
   const privKeyRef = useRef<`0x${string}` | null>(null)
   const accountRef = useRef<any>(null)
   const meeClientRef = useRef<any>(null)
   const quoteRef = useRef<any>(null)
+  const stageRef = useRef<Stage>('idle')
+  stageRef.current = stage
 
   const recipientValid = useMemo(
     () => recipient.length > 0 && isAddress(recipient),
@@ -96,155 +102,132 @@ function App() {
     quoteRef.current = null
   }, [])
 
-  const step1 = useCallback(async () => {
-    if (busy) return
-    setBusy(true)
-    try {
-      const pk = generatePrivateKey()
-      privKeyRef.current = pk
-      const signer = privateKeyToAccount(pk)
-      setEphemeralAddress(signer.address)
-      log('info', `Generated ephemeral EOA ${signer.address}`)
-      log('info', 'Private key held only in memory (useRef) — never rendered.')
-      setStage('key')
-    } catch (e) {
-      log('err', `Key gen failed: ${(e as Error).message}`)
-    } finally {
-      setBusy(false)
-    }
-  }, [busy, log])
+  // ---- work functions (no busy gating; orchestrator handles that) ----
 
-  const step2 = useCallback(async () => {
-    if (busy || !privKeyRef.current) return
-    setBusy(true)
-    try {
-      const signer = privateKeyToAccount(privKeyRef.current)
-      const account = await toMultichainNexusAccount({
-        signer,
-        chainConfigurations: [
-          {
-            chain: base,
-            transport: http(),
-            version: getMEEVersion(MEEVersion.V2_1_0),
-          },
+  const doGenerate = useCallback(async () => {
+    const pk = generatePrivateKey()
+    privKeyRef.current = pk
+    const signer = privateKeyToAccount(pk)
+    log('info', `Generated ephemeral EOA ${signer.address}`)
+    log('info', 'Private key held only in memory (useRef) — never rendered.')
+    setStage('key')
+  }, [log])
+
+  const doInit = useCallback(async () => {
+    if (!privKeyRef.current) throw new Error('no ephemeral key')
+    const signer = privateKeyToAccount(privKeyRef.current)
+    const account = await toMultichainNexusAccount({
+      signer,
+      chainConfigurations: [
+        {
+          chain: base,
+          transport: http(),
+          version: getMEEVersion(MEEVersion.V2_1_0),
+        },
+      ],
+    })
+    accountRef.current = account
+    const meeClient = await createMeeClient({ account, apiKey: MEE_API_KEY })
+    meeClientRef.current = meeClient
+    const smartAddr = account.addressOn(base.id, true)
+    setSmartAddress(smartAddr)
+    log('ok', `Nexus smart account on Base: ${smartAddr}`)
+    log('info', 'Counterfactual — no code deployed yet.')
+    setStage('account')
+  }, [log])
+
+  const doBuild = useCallback(async () => {
+    if (!accountRef.current) throw new Error('no nexus account')
+    if (!recipientValid) throw new Error('recipient required')
+    const account = accountRef.current
+    const smart = account.addressOn(base.id, true)
+    const minAmount = parseUnits(minUsdc || '0', 6)
+
+    log('info', 'Building 3-step composable batch…')
+
+    const approve = await account.buildComposable({
+      type: 'default',
+      data: {
+        chainId: base.id,
+        to: USDC_BASE,
+        abi: erc20Abi,
+        functionName: 'approve',
+        args: [
+          UNISWAP_V3_ROUTER,
+          runtimeERC20BalanceOf({
+            tokenAddress: USDC_BASE,
+            targetAddress: smart,
+            constraints: [greaterThanOrEqualTo(minAmount)],
+          }),
         ],
-      })
-      accountRef.current = account
-      const meeClient = await createMeeClient({ account, apiKey: MEE_API_KEY })
-      meeClientRef.current = meeClient
-      const smartAddr = account.addressOn(base.id, true)
-      log('ok', `Nexus smart account on Base: ${smartAddr}`)
-      log('info', 'Counterfactual — no code deployed yet.')
-      setStage('account')
-    } catch (e) {
-      log('err', `Account init failed: ${(e as Error).message}`)
-    } finally {
-      setBusy(false)
-    }
-  }, [busy, log])
+      },
+    })
+    log('ok', '1/3 approve(USDC → Uniswap, runtimeBalance)')
 
-  const step3 = useCallback(async () => {
-    if (busy || !accountRef.current || !recipientValid) return
-    setBusy(true)
-    try {
-      const account = accountRef.current
-      const smart = account.addressOn(base.id, true)
-      const minAmount = parseUnits(minUsdc || '0', 6)
-
-      log('info', 'Building 3-step composable batch…')
-
-      // 1) Approve USDC to Uniswap — runtime balance
-      const approve = await account.buildComposable({
-        type: 'default',
-        data: {
-          chainId: base.id,
-          to: USDC_BASE,
-          abi: erc20Abi,
-          functionName: 'approve',
-          args: [
-            UNISWAP_V3_ROUTER,
-            runtimeERC20BalanceOf({
+    const swap = await account.buildComposable({
+      type: 'default',
+      data: {
+        chainId: base.id,
+        to: UNISWAP_V3_ROUTER,
+        abi: swapRouterAbi,
+        functionName: 'exactInputSingle',
+        args: [
+          {
+            tokenIn: USDC_BASE,
+            tokenOut: WETH_BASE,
+            fee: POOL_FEE,
+            recipient: smart,
+            amountIn: runtimeERC20BalanceOf({
               tokenAddress: USDC_BASE,
               targetAddress: smart,
-              constraints: [greaterThanOrEqualTo(minAmount)],
             }),
-          ],
-        },
-      })
-      log('ok', '1/3 approve(USDC → Uniswap, runtimeBalance)')
+            amountOutMinimum: 0n,
+            sqrtPriceLimitX96: 0n,
+          },
+        ],
+      },
+    })
+    log('ok', '2/3 Uniswap.exactInputSingle(USDC → WETH, 0.05%)')
 
-      // 2) Swap USDC → WETH on Uniswap V3 — runtime amountIn
-      const swap = await account.buildComposable({
-        type: 'default',
-        data: {
-          chainId: base.id,
-          to: UNISWAP_V3_ROUTER,
-          abi: swapRouterAbi,
-          functionName: 'exactInputSingle',
-          args: [
-            {
-              tokenIn: USDC_BASE,
-              tokenOut: WETH_BASE,
-              fee: POOL_FEE,
-              recipient: smart,
-              amountIn: runtimeERC20BalanceOf({
-                tokenAddress: USDC_BASE,
-                targetAddress: smart,
-              }),
-              amountOutMinimum: 0n,
-              sqrtPriceLimitX96: 0n,
-            },
-          ],
-        },
-      })
-      log('ok', '2/3 Uniswap.exactInputSingle(USDC → WETH, 0.05%)')
+    const sendWeth = await account.buildComposable({
+      type: 'default',
+      data: {
+        chainId: base.id,
+        to: WETH_BASE,
+        abi: erc20Abi,
+        functionName: 'transfer',
+        args: [
+          recipient as `0x${string}`,
+          runtimeERC20BalanceOf({
+            tokenAddress: WETH_BASE,
+            targetAddress: smart,
+          }),
+        ],
+      },
+    })
+    log('ok', `3/3 WETH.transfer(${short(recipient)}, runtimeBalance)`)
 
-      // 3) Transfer full WETH balance to recipient — runtime WETH balance
-      const sendWeth = await account.buildComposable({
-        type: 'default',
-        data: {
-          chainId: base.id,
-          to: WETH_BASE,
-          abi: erc20Abi,
-          functionName: 'transfer',
-          args: [
-            recipient as `0x${string}`,
-            runtimeERC20BalanceOf({
-              tokenAddress: WETH_BASE,
-              targetAddress: smart,
-            }),
-          ],
-        },
-      })
-      log('ok', `3/3 WETH.transfer(${short(recipient)}, runtimeBalance)`)
+    const expiry = Math.floor(Date.now() / 1000) + ONE_HOUR
+    setExpiresAt(expiry)
+    log(
+      'ok',
+      `Predicate: USDC balance ≥ ${minUsdc}. Expires ${new Date(
+        expiry * 1000
+      ).toLocaleTimeString()}.`
+    )
 
-      const expiry = Math.floor(Date.now() / 1000) + ONE_HOUR
-      setExpiresAt(expiry)
-
-      log(
-        'ok',
-        `Predicate: USDC balance ≥ ${minUsdc}. Expires ${new Date(
-          expiry * 1000
-        ).toLocaleTimeString()}.`
-      )
-
-      quoteRef.current = {
-        instructions: [approve, swap, sendWeth],
-        upperBoundTimestamp: expiry,
-      }
-      setStage('built')
-    } catch (e) {
-      log('err', `Build failed: ${(e as Error).message}`)
-    } finally {
-      setBusy(false)
+    quoteRef.current = {
+      instructions: [approve, swap, sendWeth],
+      upperBoundTimestamp: expiry,
     }
-  }, [busy, recipient, recipientValid, minUsdc, log])
+    setStage('built')
+  }, [recipient, recipientValid, minUsdc, log])
 
-  const step4 = useCallback(async () => {
-    if (busy || !meeClientRef.current || !quoteRef.current) return
-    setBusy(true)
+  const doFire = useCallback(async () => {
+    if (!meeClientRef.current || !quoteRef.current)
+      throw new Error('not built')
+    const meeClient = meeClientRef.current
     try {
-      const meeClient = meeClientRef.current
       log('info', 'Requesting sponsored quote from MEE node…')
       const quote = await meeClient.getQuote({
         instructions: quoteRef.current.instructions,
@@ -263,95 +246,122 @@ function App() {
       )
       setStage('fired')
     } catch (e) {
-      const msg = (e as Error).message
-      log('warn', `Relayer rejected: ${msg}`)
+      log('warn', `Relayer rejected: ${(e as Error).message}`)
       log(
         'info',
         'Signed batch is still valid; a funded relayer could submit it.'
       )
       setStage('signed')
-    } finally {
-      setBusy(false)
     }
-  }, [busy, log])
+  }, [log])
 
-  const step5 = useCallback(() => {
+  const doWipe = useCallback(async () => {
+    const wasFired = stageRef.current === 'fired'
     wipe()
     log('ok', 'Ephemeral key wiped from memory. Key pair no longer exists.')
     log(
       'info',
-      stage === 'fired'
+      wasFired
         ? 'Signed batch is autonomous — relayer holds it, user walks away.'
         : 'Even without firing, the key is gone. A new session would start from scratch.'
     )
     setStage('cleared')
-  }, [stage, wipe, log])
+  }, [wipe, log])
+
+  // ---- orchestrator: run everything end-to-end ----
+
+  const runAll = useCallback(async () => {
+    if (busyRef.current) return
+    if (!recipientValid || !minOk) {
+      log('warn', 'Set a valid recipient and threshold before starting.')
+      return
+    }
+    busyRef.current = true
+    setBusy(true)
+    try {
+      await doGenerate()
+      await wait(500)
+      await doInit()
+      await wait(500)
+      await doBuild()
+      await wait(500)
+      await doFire()
+      await wait(900)
+      await doWipe()
+    } catch (e) {
+      log('err', (e as Error).message)
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+    }
+  }, [recipientValid, minOk, doGenerate, doInit, doBuild, doFire, doWipe, log])
 
   const reset = useCallback(() => {
     wipe()
-    setEphemeralAddress(null)
+    setSmartAddress(null)
     setQuoteHash(null)
     setExpiresAt(null)
+    setCopied(false)
     setLogs([])
     setStage('idle')
   }, [wipe])
 
-  const steps: {
-    key: Stage
-    label: string
-    hint: string
-    run?: () => void
-    enabled: boolean
-  }[] = [
+  const copySmart = useCallback(async () => {
+    if (!smartAddress) return
+    try {
+      await navigator.clipboard.writeText(smartAddress)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1400)
+    } catch {
+      /* noop */
+    }
+  }, [smartAddress])
+
+  const steps: { key: Stage; label: string; hint: string }[] = [
     {
       key: 'key',
       label: '1. Generate ephemeral key',
       hint: 'viem · generatePrivateKey() → memory only',
-      run: step1,
-      enabled: stage === 'idle',
     },
     {
       key: 'account',
       label: '2. Initialize Nexus account',
       hint: 'toMultichainNexusAccount + createMeeClient',
-      run: step2,
-      enabled: stage === 'key',
     },
     {
       key: 'built',
       label: '3. Build composable batch',
       hint: 'approve → swap → transfer, all runtime-resolved',
-      run: step3,
-      enabled: stage === 'account' && recipientValid && minOk,
     },
     {
       key: 'fired',
       label: '4. Sign & send to relayer',
       hint: 'sponsorship: true · upperBoundTimestamp = now + 1h',
-      run: step4,
-      enabled: stage === 'built',
     },
     {
       key: 'cleared',
       label: '5. Wipe ephemeral key',
       hint: 'Key destroyed — transaction lives on its own',
-      run: step5,
-      enabled: stage === 'fired' || stage === 'signed',
     },
   ]
 
-  const reached = (k: Stage) => {
-    const order: Stage[] = [
-      'idle',
-      'key',
-      'account',
-      'built',
-      'signed',
-      'fired',
-      'cleared',
-    ]
-    return order.indexOf(stage) >= order.indexOf(k)
-  }
+  const stageOrder: Stage[] = [
+    'idle',
+    'key',
+    'account',
+    'built',
+    'signed',
+    'fired',
+    'cleared',
+  ]
+  const currentIdx = stageOrder.indexOf(stage)
+  const activeStepKey: Stage | null = busy
+    ? (['key', 'account', 'built', 'fired', 'cleared'] as Stage[]).find(
+        (k) => stageOrder.indexOf(k) > currentIdx
+      ) ?? null
+    : null
+
+  const reached = (k: Stage) => stageOrder.indexOf(stage) >= stageOrder.indexOf(k)
 
   const stageLabels: Record<Stage, string> = {
     idle: 'Configure',
@@ -409,9 +419,9 @@ function App() {
             <div className="stat-v">1 hour</div>
           </div>
           <div className="stat">
-            <div className="stat-k">Ephemeral</div>
+            <div className="stat-k">Smart account</div>
             <div className="stat-v mono small">
-              {short(ephemeralAddress, 8, 6)}
+              {short(smartAddress, 8, 6)}
             </div>
           </div>
           <div className="stat">
@@ -474,7 +484,7 @@ function App() {
             <div className="steps">
               {steps.map((s, i) => {
                 const done = reached(s.key)
-                const active = s.enabled && !busy
+                const active = activeStepKey === s.key
                 return (
                   <div
                     key={s.key}
@@ -482,31 +492,70 @@ function App() {
                       active ? 'active' : ''
                     }`}
                   >
-                    <div className="step-dot">{done ? '✓' : i + 1}</div>
+                    <div className="step-dot">
+                      {done ? '✓' : active ? <span className="spin" /> : i + 1}
+                    </div>
                     <div className="step-body">
                       <div className="step-label">{s.label}</div>
                       <div className="step-hint">{s.hint}</div>
                     </div>
-                    <button
-                      className="go"
-                      onClick={() => s.run?.()}
-                      disabled={!active}
-                    >
-                      {done ? '✓' : busy && stage !== s.key ? '…' : 'run'}
-                    </button>
                   </div>
                 )
               })}
-              {stage === 'cleared' && (
-                <button className="reset" onClick={reset}>
-                  start a new flow
-                </button>
-              )}
             </div>
+            {stage === 'idle' ? (
+              <button
+                className="primary"
+                onClick={runAll}
+                disabled={busy || !recipientValid || !minOk}
+              >
+                {busy ? 'running…' : 'Start the flow'}
+              </button>
+            ) : stage === 'cleared' ? (
+              <button className="reset" onClick={reset}>
+                Start a new flow
+              </button>
+            ) : (
+              <div className="running-pill">
+                <span className="spin small" />
+                <span>
+                  {busy ? 'Running end-to-end…' : 'Flow complete'}
+                </span>
+              </div>
+            )}
           </div>
         </aside>
 
         <div className="main-col">
+          {smartAddress && (
+            <section className={`deposit ${stage === 'fired' ? 'live' : ''}`}>
+              <div className="deposit-label">
+                <span className="deposit-dot" />
+                {stage === 'fired' || stage === 'cleared'
+                  ? 'Listening · send USDC to fire the batch'
+                  : 'Send USDC here to fire the batch'}
+              </div>
+              <div className="deposit-row">
+                <span className="deposit-addr mono">{smartAddress}</span>
+                <button className="copy" onClick={copySmart}>
+                  {copied ? 'copied' : 'copy'}
+                </button>
+              </div>
+              <div className="deposit-hint">
+                {stage === 'fired' || stage === 'cleared'
+                  ? `Batch fires automatically once balance ≥ ${minUsdc || '0'} USDC. Expires in ${
+                      expiresAt
+                        ? Math.max(
+                            0,
+                            Math.floor((expiresAt * 1000 - Date.now()) / 60000)
+                          )
+                        : 60
+                    }m.`
+                  : 'Nexus smart account on Base · counterfactual until the first call.'}
+              </div>
+            </section>
+          )}
+
           <section className="card batch">
             <div className="batch-head">
               <div>

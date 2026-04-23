@@ -33,7 +33,9 @@
       "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_esm/clients/createMeeClient.js)",
       "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_esm/clients/decorators/mee/getQuote.js)",
       "WebSearch",
-      "WebFetch(domain:network.biconomy.io)"
+      "WebFetch(domain:network.biconomy.io)",
+      "Bash(bunx tsc *)",
+      "Bash(echo \"exit=$?\")"
     ]
   }
 }
