@@ -1,0 +1,63 @@
+:root {
+  --bg: #f4f1ec;
+  --bg-card: #ffffff;
+  --bg-soft: #faf8f4;
+  --ink: #1a1a1f;
+  --ink-soft: #5a5a66;
+  --ink-mute: #9a9aa5;
+  --line: #e8e3d9;
+  --line-soft: #f0ece2;
+  --accent: #ff5a1f;
+  --accent-soft: #ffe9de;
+  --success: #0f8a5f;
+  --success-soft: #dff5eb;
+  --danger: #c13f3f;
+  --danger-soft: #fbe4e4;
+  --warn: #b87a00;
+  --warn-soft: #fff1d6;
+
+  font-family: 'Sora', system-ui, -apple-system, sans-serif;
+  font-weight: 400;
+  color: var(--ink);
+  background: var(--bg);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+body {
+  background-image:
+    radial-gradient(ellipse 80% 50% at 20% 0%, rgba(255, 90, 31, 0.07), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 90% 30%, rgba(15, 138, 95, 0.05), transparent 60%);
+  background-attachment: fixed;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font-family: inherit;
+}
+
+code,
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}

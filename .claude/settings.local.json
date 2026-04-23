@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -L \"https://docs.biconomy.io/\" -o /tmp/biconomy_home.html -w \"HTTP: %{http_code}\\\\n\" --max-time 30)",
+      "Bash(curl -s -L \"https://docs.biconomy.io/getting-started\" -o /tmp/biconomy_gs.html -w \"HTTP: %{http_code}\\\\n\" --max-time 30)",
+      "Bash(curl -s -L \"https://docs.biconomy.io/composable-transactions\" -o /tmp/biconomy_ct.html -w \"HTTP: %{http_code}\\\\n\" --max-time 30)",
+      "Bash(curl -s -L \"https://docs.biconomy.io/modules/composability\" -o /tmp/biconomy_mc.html -w \"HTTP: %{http_code}\\\\n\" --max-time 30)",
+      "Bash(curl -s -L \"https://docs.biconomy.io/sdk-reference\" -o /tmp/biconomy_sdk.html -w \"HTTP: %{http_code}\\\\n\" --max-time 30)",
+      "Bash(curl -s -L \"https://docs.biconomy.io/sitemap.xml\" --max-time 30)",
+      "WebFetch(domain:docs.biconomy.io)",
+      "Bash(bun create *)",
+      "Bash(mv * ../)",
+      "Bash(mv .gitignore ../)",
+      "Bash(rmdir presign-app *)",
+      "Bash(bun install *)",
+      "Bash(bun add *)",
+      "Bash(bun run *)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_types/modules/mee/createMeeClient.d.ts)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_types/modules/mee/actions/getQuote/getQuote.d.ts)",
+      "Bash(curl -s \"https://unpkg.com/browse/@biconomy/abstractjs@1.2.3/\")",
+      "Bash(curl -sI https://unpkg.com/@biconomy/abstractjs@1.2.3/package.json)",
+      "Bash(curl -s https://registry.npmjs.org/@biconomy/abstractjs)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/package.json)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_types/index.d.ts)",
+      "Bash(curl -sL \"https://app.unpkg.com/@biconomy/abstractjs@1.2.3/files/dist/_types\")",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_types/clients/index.d.ts)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_types/clients/createMeeClient.d.ts)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_types/clients/decorators/index.d.ts)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_types/clients/decorators/mee/index.d.ts)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_types/clients/decorators/mee/getQuote.d.ts)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_types/clients/createHttpClient.d.ts)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_esm/clients/createHttpClient.js)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_esm/clients/createMeeClient.js)",
+      "Bash(curl -s https://unpkg.com/@biconomy/abstractjs@1.2.3/dist/_esm/clients/decorators/mee/getQuote.js)",
+      "WebSearch",
+      "WebFetch(domain:network.biconomy.io)"
+    ]
+  }
+}
